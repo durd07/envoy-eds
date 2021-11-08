@@ -51,7 +51,7 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: 10.5.1.7
+                address: 127.0.0.1
                 port_value: 5678
     http2_protocol_options: {}
     name: xds_cluster

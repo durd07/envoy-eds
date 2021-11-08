@@ -60,17 +60,24 @@ func (s *server) StreamEndpoints(stream endpointservice.EndpointDiscoveryService
 
 	for {
 		select {
-		case _, ok := <-reqChannel:
+		case req, ok := <-reqChannel:
 			if !ok {
 				log.Error("Error receiving request")
 				return errors.New("Error receiving request")
 			}
+
+			if req.ResponseNonce == "12345678" {
+				continue
+			}
+
 			eds, err := cache.MarshalResource(generateEDS())
 			if err != nil {
 				log.Error("Error while marhal resource ", err)
 			}
 			resp := &discovery.DiscoveryResponse{
+				VersionInfo: "12345678",
 				TypeUrl: resource.EndpointType,
+				Nonce: "12345678",
 				Resources: []*anypb.Any{
 					{
 						Value:   eds,
@@ -101,7 +108,7 @@ func (*server) FetchEndpoints(ctx context.Context, req *discovery.DiscoveryReque
 
 func generateEDS() *endpoint.ClusterLoadAssignment {
 	return &endpoint.ClusterLoadAssignment{
-		ClusterName: "hello-endpoint",
+		ClusterName: "outbound|5060||scscf-internal.cncs.svc.cluster.local",
 		Endpoints: []*endpoint.LocalityLbEndpoints{
 			{
 				LbEndpoints: []*endpoint.LbEndpoint{
@@ -111,9 +118,9 @@ func generateEDS() *endpoint.ClusterLoadAssignment {
 								Address: &core.Address{
 									Address: &core.Address_SocketAddress{
 										SocketAddress: &core.SocketAddress{
-											Address: "10.5.1.6",
+											Address: "192.168.0.20",
 											PortSpecifier: &core.SocketAddress_PortValue{
-												PortValue: 80,
+												PortValue: 5060,
 											},
 										},
 									},
