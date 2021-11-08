@@ -18,7 +18,7 @@ import (
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	endpointservice "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
-	cache "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
+	envoycache "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -39,9 +39,9 @@ import (
 
 	"k8s.io/client-go/util/homedir"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
+	// "google.golang.org/grpc/peer"
 	pb "github.com/durd07/grpc-test/tra"
+	wrappers "github.com/golang/protobuf/ptypes/wrappers"
 )
 
 type server struct {
@@ -62,8 +62,13 @@ const (
 	Deleted DeltaType = "Deleted"
 )
 
+type StreamInfo struct {
+	ReqChan chan *discovery.DiscoveryRequest
+	Resources []string
+}
+
 var (
-	streamCache = make(map[chan *discovery.DiscoveryRequeststring]struct{})
+	streamCache = make(map[chan *discovery.DiscoveryRequest]struct{})
 )
 
 type QueueItem struct {
@@ -91,6 +96,10 @@ func (s *endpointAction) add(obj interface{}) {
 		Fqdn: fqdn,
 	}
 
+	if len(endpoints.Subsets) <= 0 {
+		return
+	}
+
 	for _, address := range endpoints.Subsets[0].Addresses {
 		data[fqdn].Nodes = append(data[fqdn].Nodes, &pb.Node{NodeId: address.IP, Ip: address.IP, SipPort: uint32(endpoints.Subsets[0].Ports[0].Port), Weight: 1})
 	}
@@ -106,6 +115,11 @@ func (s *endpointAction) modify(obj interface{}) {
 	data[fqdn] = &pb.TraResponse{
 		Fqdn: fqdn,
 	}
+
+	if len(endpoints.Subsets) <= 0 {
+		return
+	}
+
 
 	for _, address := range endpoints.Subsets[0].Addresses {
 		data[fqdn].Nodes = append(data[fqdn].Nodes, &pb.Node{NodeId: address.IP, Ip: address.IP, SipPort: uint32(endpoints.Subsets[0].Ports[0].Port), Weight: 20})
@@ -269,7 +283,7 @@ func watch() {
 	}
 
 	// create the endpoint watcher
-	endpointWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "endpoints", v1.NamespaceDefault, fields.Everything())
+	endpointWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "endpoints", "cncs", fields.Everything())
 
 	// create the workqueue
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
@@ -362,10 +376,10 @@ func (*server) receive(stream endpointservice.EndpointDiscoveryService_StreamEnd
 }
 
 func (s *server) StreamEndpoints(stream endpointservice.EndpointDiscoveryService_StreamEndpointsServer) error {
+	log.Infoln("RECEIVED")
 	stop := make(chan struct{})
 	reqChannel := make(chan *discovery.DiscoveryRequest, 1)
-
-	streamCache[reqChannel] = struct{}{}
+	var clusterNames []string
 
 	go s.receive(stream, reqChannel)
 
@@ -377,23 +391,25 @@ func (s *server) StreamEndpoints(stream endpointservice.EndpointDiscoveryService
 				return errors.New("Error receiving request")
 			}
 
-			if req.VersionInfo == currentVersionInfo: {
+			if req.VersionInfo == currentVersionInfo {
 				continue
 			}
 
-			if req.GetTypeUrl() != resource.EndpointType {
+			if req.GetTypeUrl() == resource.EndpointType {
+				clusterNames = req.GetResourceNames()
+			} else if req.GetTypeUrl() != "felixdu" {
 				continue
 			}
 
-			clusterNames = req.GetResourceNames()
+			log.Infof("Received %s for %v\n", req.GetTypeUrl, req.GetResourceNames())
 
-			resources := []*anypb.Any
+			resources := []*anypb.Any{}
 			for _, clusterName := range clusterNames {
-				eds, err := cache.MarshalResource(generateEDS(clusterName))
+				eds, err := envoycache.MarshalResource(generateEDS(clusterName))
 				if err != nil {
 					log.Error("Error while marhal resource ", err)
 				}
-				append(resources, &anypb.Any{
+				resources = append(resources, &anypb.Any{
 					Value: eds,
 					TypeUrl: resource.EndpointType,
 				})
@@ -406,7 +422,7 @@ func (s *server) StreamEndpoints(stream endpointservice.EndpointDiscoveryService
 				Resources: resources,
 			}
 
-			err = stream.Send(resp)
+			err := stream.Send(resp)
 			if err != nil {
 				log.Error("Error StreamingEndpoint ", err)
 				return err
@@ -425,41 +441,43 @@ func (*server) DeltaEndpoints(stream endpointservice.EndpointDiscoveryService_De
 }
 
 func (*server) FetchEndpoints(ctx context.Context, req *discovery.DiscoveryRequest) (*discovery.DiscoveryResponse, error) {
-	log.Info("FetchEndpoints service not implemented")
+	klog.Info("FetchEndpoints service not implemented")
 	return nil, nil
 }
 
-func generateEDS(clusterName: string) *endpoint.ClusterLoadAssignment {
+func generateEDS(clusterName string) *endpoint.ClusterLoadAssignment {
 	s := strings.Split(clusterName, "|")
-	direction := s[0]
-	port := s[1]
-	subset := s[2]
+	//direction := s[0]
+	//port := s[1]
+	//subset := s[2]
 	fqdn := s[3]
 
 	nodes := data[fqdn].GetNodes()
 	var locEndpoints []*endpoint.LocalityLbEndpoints
 	for _, v := range nodes {
 		ep := []*endpoint.LbEndpoint {
-			HostIdentifier: &endpoint.LbEndpoint_Endpoint {
-				Endpoint: &endpoint.Endpoint {
-					Address: &core.Address {
-						Address: &core.Address_SocketAddress {
-							SocketAddress: &core.SocketAddress {
-								Protocol: core.SocketAddress_TCP,
-								Address: v.Ip,
-								PortSpecifier: &core.SocketAddress_PortValue {
-									PortValue: v.Port,
+			{
+				HostIdentifier: &endpoint.LbEndpoint_Endpoint {
+					Endpoint: &endpoint.Endpoint {
+						Address: &core.Address {
+							Address: &core.Address_SocketAddress {
+								SocketAddress: &core.SocketAddress {
+									Protocol: core.SocketAddress_TCP,
+									Address: v.Ip,
+									PortSpecifier: &core.SocketAddress_PortValue {
+										PortValue: v.SipPort,
+									},
 								},
 							},
 						},
 					},
 				},
+				LoadBalancingWeight: &wrappers.UInt32Value{Value: v.Weight},
 			},
-			LoadBalancingWeight: &wrappers.UInt32Value{Value: v.Weight},
 		}
 
 		locEndpoints = append(locEndpoints, &endpoint.LocalityLbEndpoints{
-			LbEndpoint: ep,
+			LbEndpoints: ep,
 		})
 	}
 
@@ -502,7 +520,20 @@ func updateNodes(w http.ResponseWriter, r *http.Request) {
 			klog.Infoln(k, v.Nodes)
 		}
 
-		change_chan <- struct{}{}
+		currentVersionInfo = time.Now().String()
+
+		//resources := []string {}
+		//for k, _ := range data {
+		//	r := fmt.Sprintf("outbound|5060||%s", k)
+		//	resources = append(resources, r)
+		//}
+
+		for k, _ := range streamCache {
+			k <- &discovery.DiscoveryRequest{
+				VersionInfo: currentVersionInfo,
+				TypeUrl: "felixdu",
+			}
+		}
 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")

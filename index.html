@@ -62,9 +62,13 @@
 			width: 66px;
 		}
 
+    table th:nth-child(2) {
+      width: 300px;
+    }
+
 		.overlay .con {
 			position: absolute;
-			width: 420px;
+			width: 620px;
 			min-height: 300px;
 			background: #fff;
 			left: 50%;
@@ -179,7 +183,7 @@
 			list: []
 		},
 		mounted() {
-			axios.get('http://felixdu.hz.dynamic.nsn-net.net:50052/update')
+			axios.get('http://felixdu.fp.dynamic.nsn-net.net:50052/update')
 				.then(response => {
 					console.log(response)
 					this.list = response.data
@@ -269,7 +273,7 @@
 			sync() {
 				console.log(this.list);
 				let params = this.list
-				axios.post('http://felixdu.hz.dynamic.nsn-net.net:50052/update', params)
+				axios.post('http://felixdu.fp.dynamic.nsn-net.net:50052/update', params)
 					.then(response => {
 						this.$forceUpdate()
 					});
